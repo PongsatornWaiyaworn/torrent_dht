@@ -85,7 +85,7 @@ dht> get 7ac751a7cf1aff7d0a2dc7157505458c7219ea974ff39161d9e8341f709507be output
 [TORRENT] saved as output.txt
 ```
 
-**เสร็จสิ้น!** ไฟล์ถูกดาวน์โหลดและบันทึกเป็น output.txt`
+**เสร็จสิ้น!** ไฟล์ถูกดาวน์โหลดและบันทึกเป็น `output.txt`
 
 ---
 
@@ -173,7 +173,7 @@ dht> share file.txt
 **Seeder 2 (ไฟล์เดียวกัน):**
 ```bash
 dht> share file.txt
-[HASH] SHA-256 = xyz789...  # info_hash เดียวกัน!
+[HASH] SHA-256 = xyz789...  # info_hash เดียวกัน
 ```
 
 **Leecher จะเห็น peers ทั้งคู่:**
@@ -204,42 +204,3 @@ dht> table
 - ไฟล์เดียวกัน = info_hash เดียวกันเสมอ
 
 ---
-
-## การแก้ปัญหา
-
-### ปัญหา: เชื่อมต่อ bootstrap ไม่ได้
-
-```
-ConnectionRefusedError: [Errno 61] Connection refused
-```
-
-**วิธีแก้:**
-1. ตรวจสอบว่า bootstrap node ทำงานอยู่
-2. ตรวจสอบ IP และ port ที่ระบุถูกต้อง
-3. ตรวจสอบ firewall
-
----
-
-### ปัญหา: ไม่พบ peers
-
-```
-[TORRENT] no peers found
-```
-
-**วิธีแก้:**
-1. ตรวจสอบว่า seeder ยังออนไลน์อยู่
-2. รอ 2-3 วินาทีให้ DHT sync
-3. ใช้คำสั่ง `table` ตรวจสอบว่ามี info_hash หรือไม่
-
----
-
-### ปัญหา: ดาวน์โหลดไม่สำเร็จ
-
-```
-ConnectionRefusedError at file server port
-```
-
-**วิธีแก้:**
-1. ตรวจสอบว่าไฟล์ยังอยู่บน seeder
-2. ตรวจสอบ file server port (DHT port + 1000)
-3. ตรวจสอบ firewall ที่ port ทั้งสอง
