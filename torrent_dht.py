@@ -6,26 +6,15 @@ import hashlib
 import os
 
 BUFFER = 4096
+TIMEOUT = 5
+
 
 # ---------------- Utils ----------------
-def get_local_ip():
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    try:
-        s.connect(("8.8.8.8", 80))
-        ip = s.getsockname()[0]
-    finally:
-        s.close()
-    return ip
-
-
 def file_hash(path):
     print(f"[HASH] reading {path}")
     h = hashlib.sha256()
     with open(path, "rb") as f:
-        while True:
-            chunk = f.read(8192)
-            if not chunk:
-                break
+        while chunk := f.read(8192):
             h.update(chunk)
     digest = h.hexdigest()
     print(f"[HASH] SHA-256 = {digest}")
@@ -34,17 +23,15 @@ def file_hash(path):
 
 # ---------------- DHT Node ----------------
 class DHTNode:
-    def __init__(self, node_id, bind_host, port):
+    def __init__(self, node_id, bind_host, announce_ip, port):
         self.node_id = node_id
         self.bind_host = bind_host
+        self.announce_ip = announce_ip
         self.port = port
 
-        # IP ที่จะประกาศให้ peer คนอื่น
-        self.public_ip = get_local_ip()
-
-        self.routing_table = {}    # node_id -> (host, port)
-        self.dht = {}              # info_hash -> [(host, port)]
-        self.shared_files = {}     # info_hash -> filename
+        self.routing_table = {}      # node_id -> (host, port)
+        self.dht = {}                # info_hash -> [(host, port)]
+        self.shared_files = {}       # info_hash -> filename
 
         self.sock = socket.socket()
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -52,7 +39,7 @@ class DHTNode:
         self.sock.listen(5)
 
         print(f"[NODE {node_id}] bind {bind_host}:{port}")
-        print(f"[NODE {node_id}] public {self.public_ip}:{port}")
+        print(f"[NODE {node_id}] announce {announce_ip}:{port}")
 
     # ---------------- Network ----------------
     def start(self):
@@ -63,11 +50,11 @@ class DHTNode:
             conn, addr = self.sock.accept()
             threading.Thread(
                 target=self._handle_conn,
-                args=(conn, addr),
+                args=(conn,),
                 daemon=True
             ).start()
 
-    def _handle_conn(self, conn, addr):
+    def _handle_conn(self, conn):
         try:
             msg = conn.recv(BUFFER).decode()
             req = json.loads(msg)
@@ -80,11 +67,16 @@ class DHTNode:
 
     def send(self, host, port, payload):
         s = socket.socket()
-        s.connect((host, port))
-        s.send(json.dumps(payload).encode())
-        resp = json.loads(s.recv(BUFFER).decode())
-        s.close()
-        return resp
+        s.settimeout(TIMEOUT)
+        try:
+            s.connect((host, port))
+            s.send(json.dumps(payload).encode())
+            return json.loads(s.recv(BUFFER).decode())
+        except Exception as e:
+            print(f"[NET] failed {host}:{port} -> {e}")
+            return {}
+        finally:
+            s.close()
 
     # ---------------- DHT ----------------
     def handle_request(self, req):
@@ -105,9 +97,8 @@ class DHTNode:
             return {"status": "STORED"}
 
         if t == "FIND":
-            info_hash = req["info_hash"]
-            peers = self.dht.get(info_hash, [])
-            print(f"[DHT] FIND {info_hash[:8]}... -> {peers}")
+            peers = self.dht.get(req["info_hash"], [])
+            print(f"[DHT] FIND {req['info_hash'][:8]}... -> {peers}")
             return {"peers": peers}
 
         return {"error": "unknown"}
@@ -117,7 +108,7 @@ class DHTNode:
         self.send(host, port, {
             "type": "INTRODUCE",
             "id": self.node_id,
-            "addr": [self.public_ip, self.port]
+            "addr": [self.announce_ip, self.port]
         })
 
     # ---------------- Torrent ----------------
@@ -125,22 +116,20 @@ class DHTNode:
         info_hash = file_hash(filepath)
         self.shared_files[info_hash] = filepath
 
-        peer_addr = (self.public_ip, self.port + 1000)
+        peer = (self.announce_ip, self.port + 1000)
 
         print(f"[TORRENT] sharing {filepath}")
-        print(f"[TORRENT] seeder at {peer_addr}")
+        print(f"[TORRENT] seeder at {peer}")
 
-        # store local
         self.dht.setdefault(info_hash, [])
-        if peer_addr not in self.dht[info_hash]:
-            self.dht[info_hash].append(peer_addr)
+        if peer not in self.dht[info_hash]:
+            self.dht[info_hash].append(peer)
 
-        # announce to DHT
         for h, p in self.routing_table.values():
             self.send(h, p, {
                 "type": "STORE",
                 "info_hash": info_hash,
-                "peer": list(peer_addr)
+                "peer": list(peer)
             })
 
     def lookup(self, info_hash):
@@ -169,12 +158,10 @@ class DHTNode:
                 conn, _ = s.accept()
                 info_hash = conn.recv(1024).decode()
                 path = self.shared_files.get(info_hash)
-                if not path:
-                    conn.close()
-                    continue
-                with open(path, "rb") as f:
-                    conn.sendall(f.read())
-                print(f"[PEER] sent {path}")
+                if path:
+                    with open(path, "rb") as f:
+                        conn.sendall(f.read())
+                    print(f"[PEER] sent {path}")
                 conn.close()
 
         threading.Thread(target=server, daemon=True).start()
@@ -189,6 +176,7 @@ class DHTNode:
         print(f"[TORRENT] downloading from {host}:{port}")
 
         s = socket.socket()
+        s.settimeout(TIMEOUT)
         s.connect((host, port))
         s.send(info_hash.encode())
 
@@ -203,7 +191,11 @@ class DHTNode:
             f.write(data)
 
         s.close()
-        print(f"[TORRENT] saved as {save_as}")
+
+        if file_hash(save_as) == info_hash:
+            print(f"[TORRENT] saved as {save_as} (OK)")
+        else:
+            print("[TORRENT] hash mismatch!")
 
 
 # ---------------- Main ----------------
@@ -211,10 +203,11 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--id", required=True)
     parser.add_argument("--port", type=int, required=True)
+    parser.add_argument("--announce", required=True)
     parser.add_argument("--bootstrap")
     args = parser.parse_args()
 
-    node = DHTNode(args.id, "0.0.0.0", args.port)
+    node = DHTNode(args.id, "0.0.0.0", args.announce, args.port)
     node.start()
     node.serve_file()
 
